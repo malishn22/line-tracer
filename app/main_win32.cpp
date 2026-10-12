@@ -21,6 +21,8 @@
 #include "../core/renderer.h"
 #include "../core/stats.h"
 #include "../platform/capture.h"
+#include "ui_controls.h"
+#include "ui_theme.h"
 
 using namespace lt;
 namespace fs = std::filesystem;
@@ -31,11 +33,12 @@ enum {
     ID_REC = 101, ID_FILTER, ID_TITLE, ID_PICK, ID_COLOR, ID_OPEN, ID_SAVE, ID_EXPORT,
     ID_BRIGHT, ID_GAIN, ID_GLOW, ID_PLAY, ID_SPEED, ID_TIME,
     ID_LBL_BRIGHT, ID_LBL_GAIN, ID_LBL_GLOW, ID_STATS, ID_INFO, ID_MONITOR, ID_LBL_MONITOR, ID_BLIND, ID_THICK, ID_LBL_THICK,
-    ID_SETTINGS, ID_SET_HOTKEY, ID_SET_CLOSE,
+    ID_SETTINGS, ID_SET_HOTKEY, ID_SET_CLOSE, ID_LBL_TIME, ID_APPEARANCE,
 };
 enum { TIMER_TICK = 1, TIMER_PICK = 2, HOTKEY_ID = 1 };
 const wchar_t* SETTINGS_TITLE = L"Settings";
 const int MARGIN = 10;
+const int ID_HINT = 0x7000;
 const double SPEEDS[4] = {1, 5, 20, 60};
 const wchar_t* APP_TITLE = L"LineTracer";
 
@@ -46,7 +49,9 @@ struct App {
     unsigned hkMods = 0, hkVk = VK_F9;  // record/stop hotkey (MOD_* flags + virtual key)
     bool sliderDrag = false;  // mouse is held on the time slider
     HWND hBright, hGain, hGlow, hLblBright, hLblGain, hLblGlow;
-    HWND hPlay, hSpeed, hTime, hStats, hInfo, hMonitor, hLblMonitor, hBlind, hThick, hLblThick;
+    HWND hPlay, hSpeed, hTime, hStats, hInfo, hMonitor, hLblMonitor, hBlind, hThick, hLblThick, hLblTime;
+    RECT cards[3] = {};  // painted panels behind the toolbar, the display sliders and the playback bar
+    ui::Mode themeMode = ui::Mode::Auto;
     int thickness = 1;  // line width in px, applies to the preview and to PNG exports
     HFONT font = nullptr;
     bool blindActive = false;  // latched at Record: no preview/stats/hover until Stop ("play first, analyze afterward")
@@ -78,11 +83,11 @@ struct App {
 
     size_t hoverIdx = SIZE_MAX;
     std::wstring status;
-    std::wstring hoverText, cacheStats, cacheInfo;
+    std::wstring hoverText, cacheStats, cacheInfo, cacheTime;
     int pickCount = 0;
 } A;
 
-int S(int v) { return MulDiv(v, A.dpi, 96); }
+int S(int v) { return ui::S(v); }
 
 bool blindNow() { return A.recording && A.blindActive; }
 const wchar_t* BLIND_STATS = L"Recording (blind mode)";
@@ -148,7 +153,16 @@ void resizeCanvas() {
     reconfigure();
 }
 
+void updateTimeLabel() {
+    std::wstring t;
+    if (blindNow()) t = L"";
+    else if (A.recording) t = fmtDuration(durationMs());
+    else t = fmtDuration(A.playTime) + L" / " + fmtDuration(durationMs());
+    setText(A.hLblTime, t, &A.cacheTime);
+}
+
 void updateStats() {
+    updateTimeLabel();
     if (blindNow()) {  // no numbers while recording in blind mode
         setText(A.hStats, BLIND_STATS, &A.cacheStats);
         return;
@@ -171,6 +185,7 @@ void setSliderFromTime() {
     double d = durationMs();
     int pos = d > 0 ? int(std::min(1.0, A.playTime / d) * 1000.0 + 0.5) : 0;
     SendMessageW(A.hTime, TBM_SETPOS, TRUE, pos);
+    updateTimeLabel();
 }
 
 size_t countAtTime(double t) {
@@ -236,6 +251,7 @@ std::wstring hotkeyName(unsigned mods, unsigned vk) {
 void setRecordLabel() {
     std::wstring t = (A.recording ? L"Stop (" : L"Record (") + hotkeyName(A.hkMods, A.hkVk) + L")";
     SetWindowTextW(A.hRec, t.c_str());
+    ui::setButtonKind(A.hRec, A.recording ? ui::BtnKind::Danger : ui::BtnKind::Primary);
 }
 
 void enableControlsForRecording(bool rec) {
@@ -337,6 +353,7 @@ void startRecording() {
     A.rend.setTimeSpan(A.timeSpan);
     setPlayButton();
     SendMessageW(A.hTime, TBM_SETPOS, TRUE, 0);
+    A.playTime = 0;
     redrawAll();
     updateStats();
     if (!A.rec.start(cfg)) return;
@@ -476,6 +493,10 @@ void onTick() {
         setSliderFromTime();
         syncDraw();
     }
+    static bool dotOn = false;
+    bool dot = (GetTickCount64() / 500) % 2 == 0;
+    if (blindNow() && dot != dotOn) InvalidateRect(A.canvas, nullptr, FALSE);  // pulsing record dot
+    dotOn = dot;
     if (A.dispDirty) InvalidateRect(A.canvas, nullptr, FALSE);
 }
 
@@ -515,10 +536,28 @@ void paintCanvas(HDC hdc) {
         RECT rc{0, 0, A.cw, A.ch};
         FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(130, 130, 130));
-        HGDIOBJ of = SelectObject(hdc, A.font);
-        DrawTextW(hdc, L"Recording (blind mode). The preview appears when you stop.", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SetTextColor(hdc, RGB(235, 235, 235));
+        HGDIOBJ of = SelectObject(hdc, ui::fontLarge());
+        RECT title = rc;
+        title.bottom = rc.bottom / 2 + S(2);
+        DrawTextW(hdc, L"Recording in blind mode", -1, &title, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
+        SetTextColor(hdc, RGB(130, 130, 140));
+        SelectObject(hdc, A.font);
+        RECT sub = rc;
+        sub.top = rc.bottom / 2 + S(10);
+        DrawTextW(hdc, L"The preview appears when you stop.", -1, &sub, DT_CENTER | DT_TOP | DT_SINGLELINE);
         SelectObject(hdc, of);
+        // pulsing record dot above the title
+        if ((GetTickCount64() / 500) % 2 == 0) {
+            HBRUSH br = CreateSolidBrush(ui::theme().danger);
+            HGDIOBJ ob = SelectObject(hdc, br);
+            HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
+            int cx = rc.right / 2, cy = rc.bottom / 2 - S(48), r = S(7);
+            Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
+            SelectObject(hdc, op);
+            SelectObject(hdc, ob);
+            DeleteObject(br);
+        }
         return;
     }
     if (!A.dib) return;
@@ -537,7 +576,7 @@ void paintCanvas(HDC hdc) {
     {
         Vec2 a = A.rend.toView(A.path.bounds.x, A.path.bounds.y);
         Vec2 b = A.rend.toView(A.path.bounds.x + A.path.bounds.w, A.path.bounds.y + A.path.bounds.h);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 70, 80));
+        HPEN pen = CreatePen(PS_SOLID, 1, ui::theme().canvasFrame);
         HGDIOBJ op = SelectObject(mem, pen);
         HGDIOBJ ob = SelectObject(mem, GetStockObject(NULL_BRUSH));
         Rectangle(mem, int(a.x), int(a.y), int(b.x), int(b.y));
@@ -559,11 +598,11 @@ void paintCanvas(HDC hdc) {
     if (A.scrub && A.viewN > 0 && A.viewN <= A.path.samples.size()) {  // bright trail + marker at the playhead
         size_t from = A.viewN > 120 ? A.viewN - 120 : 1;
         for (size_t i = std::max<size_t>(from, 1); i < A.viewN; ++i)
-            if (A.path.isSegment(i)) seg(i, RGB(255, 255, 255), S(2));
+            if (A.path.isSegment(i)) seg(i, ui::theme().trail, S(2));
         const Sample& m = A.path.samples[A.viewN - 1];
         Vec2 v = A.rend.toView(m.x, m.y);
         int r = S(6);
-        HPEN pen = CreatePen(PS_SOLID, S(2), RGB(255, 90, 70));
+        HPEN pen = CreatePen(PS_SOLID, S(2), ui::theme().marker);
         HGDIOBJ op = SelectObject(mem, pen);
         HGDIOBJ ob = SelectObject(mem, GetStockObject(NULL_BRUSH));
         Ellipse(mem, int(v.x) - r, int(v.y) - r, int(v.x) + r, int(v.y) + r);
@@ -571,7 +610,7 @@ void paintCanvas(HDC hdc) {
         SelectObject(mem, op);
         DeleteObject(pen);
     }
-    if (A.hoverIdx != SIZE_MAX && A.hoverIdx < A.path.samples.size()) seg(A.hoverIdx, RGB(255, 210, 60), S(3));
+    if (A.hoverIdx != SIZE_MAX && A.hoverIdx < A.path.samples.size()) seg(A.hoverIdx, ui::theme().hover, S(3));
 
     BitBlt(hdc, 0, 0, A.cw, A.ch, mem, 0, 0, SRCCOPY);
     SelectObject(mem, oldMem);
@@ -613,123 +652,109 @@ LRESULT CALLBACK CanvasProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 // ---------- layout / creation ----------
 
 void applyFont() {
-    if (A.font) DeleteObject(A.font);
-    A.font = CreateFontW(-MulDiv(9, A.dpi, 72), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    ui::setDpi(A.dpi);
+    A.font = ui::font();
+    // Only the stock controls (the title edit, the hotkey control) use WM_SETFONT; the custom ones read ui::font().
     EnumChildWindows(A.hwnd, [](HWND c, LPARAM) -> BOOL { SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(A.font), TRUE); return TRUE; }, 0);
 }
 
 void layout() {
     RECT cr;
     GetClientRect(A.hwnd, &cr);
-    int pad = S(8), rh = S(26), gap = S(6);
+    const int pad = S(12), cp = S(12), rh = S(32), gap = S(8);
     auto mv = [](HWND h, int x, int y, int w, int hgt) { MoveWindow(h, x, y, w, hgt, TRUE); };
-    int y = pad, x = pad;
-    mv(A.hRec, x, y, S(110), rh); x += S(110) + gap;
-    mv(A.hSettings, x, y, S(90), rh); x += S(90) + S(16);
-    mv(A.hColor, x, y, S(110), S(200)); x += S(110) + S(16);
-    mv(A.hOpen, x, y, S(60), rh); x += S(60) + gap;
-    mv(A.hSave, x, y, S(60), rh); x += S(60) + gap;
-    mv(A.hExport, x, y, S(100), rh);
-    y += rh + gap; x = pad;
-    int lblW = S(110), tbW = S(120), tbH = rh;  // labels carry the live value, e.g. "Glow 12"
-    mv(A.hLblBright, x, y + S(4), lblW, rh); x += lblW;
-    mv(A.hBright, x, y, tbW, tbH); x += tbW + S(12);
-    mv(A.hLblGain, x, y + S(4), S(80), rh); x += S(80);
-    mv(A.hGain, x, y, tbW, tbH); x += tbW + S(12);
-    mv(A.hLblGlow, x, y + S(4), S(70), rh); x += S(70);
-    mv(A.hGlow, x, y, tbW, tbH); x += tbW + S(16);
-    mv(A.hLblThick, x, y + S(4), S(84), rh); x += S(84);
-    mv(A.hThick, x, y, S(110), rh);
-    y += rh + gap; x = pad;
-    mv(A.hPlay, x, y, S(70), rh); x += S(70) + gap;
-    mv(A.hSpeed, x, y, S(80), S(200)); x += S(80) + S(16);
-    mv(A.hTime, x, y, std::max<int>(S(100), cr.right - x - pad), rh);
-    y += rh + gap;
-    int bottom = cr.bottom - S(48);
-    mv(A.canvas, pad, y, std::max<int>(cr.right - 2 * pad, 10), std::max<int>(bottom - y, 10));
-    mv(A.hStats, pad, bottom + S(4), cr.right - 2 * pad, S(20));
-    mv(A.hInfo, pad, bottom + S(24), cr.right - 2 * pad, S(20));
-    resizeCanvas();
-}
+    int cardW = cr.right - 2 * pad;
+    int y = pad;
 
-HWND mk(const wchar_t* cls, const wchar_t* text, DWORD style, int id, DWORD ex = 0) {
-    return CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10, A.hwnd,
-                           reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-}
+    // Card 1: record / settings / colour mode on the left, file actions on the right.
+    int h1 = rh + 2 * cp;
+    A.cards[0] = {pad, y, pad + cardW, y + h1};
+    int x = pad + cp, cy = y + cp;
+    mv(A.hRec, x, cy, S(132), rh); x += S(132) + gap;
+    mv(A.hSettings, x, cy, S(104), rh); x += S(104) + S(20);
+    mv(A.hColor, x, cy, S(150), rh);
+    int rx = pad + cardW - cp;
+    rx -= S(120); mv(A.hExport, rx, cy, S(120), rh); rx -= gap;
+    rx -= S(76); mv(A.hSave, rx, cy, S(76), rh); rx -= gap;
+    rx -= S(76); mv(A.hOpen, rx, cy, S(76), rh);
+    y += h1 + gap;
 
-HWND mkSlider(int id, int lo, int hi, int pos) {
-    HWND h = mk(TRACKBAR_CLASSW, L"", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, id);
-    SendMessageW(h, TBM_SETRANGE, TRUE, MAKELONG(lo, hi));
-    SendMessageW(h, TBM_SETPOS, TRUE, pos);
-    return h;
-}
-
-// A stock trackbar pages the thumb by ~10% when the channel is clicked. Instead jump the thumb to the click,
-// notify the parent like a drag would, then replay the press on the thumb so the same press keeps dragging.
-LRESULT CALLBACK TimeSliderProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR) {
-    if (m == WM_LBUTTONDOWN) {
-        RECT ch, th;
-        SendMessageW(h, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&ch));
-        SendMessageW(h, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&th));
-        int x = int(short(LOWORD(l)));
-        int half = (th.right - th.left) / 2;
-        int lo = ch.left + half, hi = ch.right - half;
-        int range = int(SendMessageW(h, TBM_GETRANGEMAX, 0, 0)) - int(SendMessageW(h, TBM_GETRANGEMIN, 0, 0));
-        double f = hi > lo ? double(std::clamp(x, lo, hi) - lo) / double(hi - lo) : 0.0;
-        int pos = int(f * range + 0.5);
-        SendMessageW(h, TBM_SETPOS, TRUE, pos);
-        SendMessageW(GetParent(h), WM_HSCROLL, MAKEWPARAM(TB_THUMBTRACK, pos), reinterpret_cast<LPARAM>(h));
-        SendMessageW(h, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&th));
-        l = MAKELPARAM((th.left + th.right) / 2, (th.top + th.bottom) / 2);
-        // The trackbar holds the mouse capture until release; playback must not move the thumb meanwhile.
-        A.sliderDrag = true;
-        LRESULT r = DefSubclassProc(h, m, w, l);
-        A.sliderDrag = false;
-        A.lastTick = GetTickCount64();
-        return r;
-    } else if (m == WM_NCDESTROY) {
-        RemoveWindowSubclass(h, TimeSliderProc, 1);
+    // Card 2: four slider cells, each a label (with the live value) over its slider.
+    int h2 = S(10) + S(20) + S(26) + S(10);
+    A.cards[1] = {pad, y, pad + cardW, y + h2};
+    int cellGap = S(24);
+    int cellW = std::max<int>(S(80), (cardW - 2 * cp - 3 * cellGap) / 4);
+    HWND lbls[4] = {A.hLblBright, A.hLblGain, A.hLblGlow, A.hLblThick};
+    HWND sls[4] = {A.hBright, A.hGain, A.hGlow, A.hThick};
+    for (int i = 0; i < 4; ++i) {
+        int cx = pad + cp + i * (cellW + cellGap);
+        mv(lbls[i], cx, y + S(10), cellW, S(20));
+        mv(sls[i], cx, y + S(10) + S(20), cellW, S(26));
     }
-    return DefSubclassProc(h, m, w, l);
+    y += h2 + gap;
+
+    // Card 3: transport.
+    int h3 = rh + 2 * cp;
+    A.cards[2] = {pad, y, pad + cardW, y + h3};
+    x = pad + cp;
+    cy = y + cp;
+    mv(A.hPlay, x, cy, S(88), rh); x += S(88) + gap;
+    mv(A.hSpeed, x, cy, S(84), rh); x += S(84) + S(16);
+    int timeW = S(150);
+    int sliderW = std::max<int>(S(100), pad + cardW - cp - timeW - S(12) - x);
+    mv(A.hTime, x, cy + (rh - S(26)) / 2, sliderW, S(26));
+    mv(A.hLblTime, pad + cardW - cp - timeW, cy, timeW, rh);
+    y += h3 + gap;
+
+    int bottom = cr.bottom - S(52);
+    int cvW = std::max<int>(cardW - 2, 10), cvH = std::max<int>(bottom - y - 2, 10);
+    mv(A.canvas, pad + 1, y + 1, cvW, cvH);
+    HRGN rgn = CreateRoundRectRgn(0, 0, cvW + 1, cvH + 1, S(16), S(16));
+    SetWindowRgn(A.canvas, rgn, TRUE);  // the system owns rgn from here on
+    mv(A.hStats, pad + S(2), bottom + S(6), cardW - S(4), S(20));
+    mv(A.hInfo, pad + S(2), bottom + S(27), cardW - S(4), S(20));
+    resizeCanvas();
+    InvalidateRect(A.hwnd, nullptr, FALSE);
 }
 
 void createControls() {
-    A.hRec = mk(L"BUTTON", L"Record", BS_PUSHBUTTON | WS_TABSTOP, ID_REC);
+    A.hRec = ui::createButton(A.hwnd, ID_REC, L"Record", ui::BtnKind::Primary);
     setRecordLabel();
-    A.hSettings = mk(L"BUTTON", L"Settings...", BS_PUSHBUTTON | WS_TABSTOP, ID_SETTINGS);
-    A.hFilter = mk(L"BUTTON", L"Window filter", BS_AUTOCHECKBOX | WS_TABSTOP, ID_FILTER);
-    A.hTitle = mk(L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, ID_TITLE);
+    A.hSettings = ui::createButton(A.hwnd, ID_SETTINGS, L"Settings");
+    A.hFilter = ui::createToggle(A.hwnd, ID_FILTER, L"Window filter");
+    A.hTitle = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP, 0, 0, 10, 10, A.hwnd,
+                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_TITLE)), GetModuleHandleW(nullptr), nullptr);
     SendMessageW(A.hTitle, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"title contains..."));
-    A.hPick = mk(L"BUTTON", L"Pick", BS_PUSHBUTTON | WS_TABSTOP, ID_PICK);
-    A.hColor = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, ID_COLOR);
-    for (const wchar_t* s : {L"White", L"By time", L"By speed"}) SendMessageW(A.hColor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+    A.hPick = ui::createButton(A.hwnd, ID_PICK, L"Pick");
+    A.hColor = ui::createCombo(A.hwnd, ID_COLOR);
+    for (const wchar_t* s : {L"Color: White", L"Color: By time", L"Color: By speed"}) SendMessageW(A.hColor, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
     SendMessageW(A.hColor, CB_SETCURSEL, 0, 0);
-    A.hOpen = mk(L"BUTTON", L"Open...", BS_PUSHBUTTON | WS_TABSTOP, ID_OPEN);
-    A.hSave = mk(L"BUTTON", L"Save...", BS_PUSHBUTTON | WS_TABSTOP, ID_SAVE);
-    A.hExport = mk(L"BUTTON", L"Export PNG...", BS_PUSHBUTTON | WS_TABSTOP, ID_EXPORT);
-    A.hLblBright = mk(L"STATIC", L"Brightness", SS_LEFT, ID_LBL_BRIGHT);
-    A.hBright = mkSlider(ID_BRIGHT, 1, 100, 20);  // value/20 -> 0.05 .. 5.0, default 1.0
-    A.hLblGain = mk(L"STATIC", L"Gain", SS_LEFT, ID_LBL_GAIN);
-    A.hGain = mkSlider(ID_GAIN, 1, 100, 20);      // value/100 -> default 0.2
-    A.hLblGlow = mk(L"STATIC", L"Glow", SS_LEFT, ID_LBL_GLOW);
-    A.hGlow = mkSlider(ID_GLOW, 0, 50, 4);
-    A.hMonitor = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, ID_MONITOR);
+    A.hOpen = ui::createButton(A.hwnd, ID_OPEN, L"Open");
+    A.hSave = ui::createButton(A.hwnd, ID_SAVE, L"Save");
+    A.hExport = ui::createButton(A.hwnd, ID_EXPORT, L"Export PNG");
+    A.hLblBright = ui::createLabel(A.hwnd, ID_LBL_BRIGHT, L"Brightness");
+    A.hBright = ui::createSlider(A.hwnd, ID_BRIGHT, 1, 100, 20);  // value/20 -> 0.05 .. 5.0, default 1.0
+    A.hLblGain = ui::createLabel(A.hwnd, ID_LBL_GAIN, L"Gain");
+    A.hGain = ui::createSlider(A.hwnd, ID_GAIN, 1, 100, 20);      // value/100 -> default 0.2
+    A.hLblGlow = ui::createLabel(A.hwnd, ID_LBL_GLOW, L"Glow");
+    A.hGlow = ui::createSlider(A.hwnd, ID_GLOW, 0, 50, 4);
+    A.hMonitor = ui::createCombo(A.hwnd, ID_MONITOR);
     populateMonitors(false);
-    A.hPlay = mk(L"BUTTON", L"Play", BS_PUSHBUTTON | WS_TABSTOP, ID_PLAY);
-    A.hSpeed = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, ID_SPEED);
+    A.hPlay = ui::createButton(A.hwnd, ID_PLAY, L"Play");
+    A.hSpeed = ui::createCombo(A.hwnd, ID_SPEED);
     for (const wchar_t* s : {L"1x", L"5x", L"20x", L"60x"}) SendMessageW(A.hSpeed, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
     SendMessageW(A.hSpeed, CB_SETCURSEL, 1, 0);
-    A.hBlind = mk(L"BUTTON", L"Blind recording", BS_AUTOCHECKBOX | WS_TABSTOP, ID_BLIND);
+    A.hBlind = ui::createToggle(A.hwnd, ID_BLIND, L"Blind recording");
     SendMessageW(A.hBlind, BM_SETCHECK, BST_CHECKED, 0);  // on by default
     // These live in the Settings dialog: hidden here, re-parented into it while it is open.
     for (HWND h : {A.hFilter, A.hTitle, A.hPick, A.hMonitor, A.hBlind}) ShowWindow(h, SW_HIDE);
-    A.hLblThick = mk(L"STATIC", L"Thickness 1", SS_LEFT, ID_LBL_THICK);
-    A.hThick = mkSlider(ID_THICK, 1, 6, 1);
-    A.hTime = mkSlider(ID_TIME, 0, 1000, 0);
+    A.hLblThick = ui::createLabel(A.hwnd, ID_LBL_THICK, L"Thickness 1");
+    A.hThick = ui::createSlider(A.hwnd, ID_THICK, 1, 6, 1);
+    A.hTime = ui::createSlider(A.hwnd, ID_TIME, 0, 1000, 0);
     SendMessageW(A.hTime, TBM_SETPAGESIZE, 0, 50);
-    SetWindowSubclass(A.hTime, TimeSliderProc, 1, 0);
-    A.hStats = mk(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, ID_STATS);
-    A.hInfo = mk(L"STATIC", L"", SS_LEFT | SS_NOPREFIX | SS_ENDELLIPSIS, ID_INFO);
+    A.hLblTime = ui::createLabel(A.hwnd, ID_LBL_TIME, L"", ui::LF_RIGHT | ui::LF_DIM);
+    A.hStats = ui::createLabel(A.hwnd, ID_STATS, L"", ui::LF_WINDOW);
+    A.hInfo = ui::createLabel(A.hwnd, ID_INFO, L"", ui::LF_WINDOW | ui::LF_DIM | ui::LF_ELLIPSIS);
     A.canvas = CreateWindowExW(0, L"LTCanvas", L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, 10, 10, A.hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
 }
 
@@ -762,6 +787,7 @@ void onTimeSlider() {
     if (A.recording || A.path.samples.empty()) return;
     int pos = int(SendMessageW(A.hTime, TBM_GETPOS, 0, 0));
     A.playTime = durationMs() * pos / 1000.0;
+    updateTimeLabel();
     A.viewN = pos >= 1000 ? A.path.samples.size() : countAtTime(A.playTime);
     A.scrub = true;
     A.lastTick = GetTickCount64();  // if playing, carry on from the new position
@@ -805,6 +831,14 @@ fs::path settingsFile() {
 
 // Loads what lives in App fields; the controls are filled by applySettingsToControls once they exist.
 struct SavedSettings { bool blind = true, filter = false; std::wstring title; };
+
+void applyTheme() {
+    ui::setMode(A.themeMode);
+    ui::applyChrome(A.hwnd, ui::theme().window);
+    if (A.settingsWnd) ui::applyChrome(A.settingsWnd, ui::theme().panel);
+    RedrawWindow(A.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+    if (A.settingsWnd) RedrawWindow(A.settingsWnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+}
 SavedSettings gSaved;
 
 void loadSettings() {
@@ -825,6 +859,8 @@ void loadSettings() {
     gSaved.title = gets(L"title");
     A.monAll = geti(L"monitorAll", 0) != 0;
     A.monName = gets(L"monitor");
+    int th = geti(L"theme", 0);
+    A.themeMode = th == 1 ? ui::Mode::Light : th == 2 ? ui::Mode::Dark : ui::Mode::Auto;
 }
 
 void saveSettings() {
@@ -839,6 +875,7 @@ void saveSettings() {
     put(L"title", t);
     put(L"monitorAll", A.monAll ? L"1" : L"0");
     put(L"monitor", A.monName);
+    put(L"theme", std::to_wstring(int(A.themeMode)));
 }
 
 void applySettingsToControls() {
@@ -858,10 +895,40 @@ bool hotkeyKeyAllowed(unsigned mods, unsigned vk) {
     return mods != 0 || (vk >= VK_F1 && vk <= VK_F24);  // a bare letter would steal that key everywhere
 }
 
+// The title edit sits inside a rounded "field" painted by the dialog (96-dpi rect: x, y, w, h).
+RECT titleFieldRect() { return {S(150), S(56), S(150) + S(236), S(56) + S(32)}; }
+
 LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     switch (m) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        const ui::Theme& t = ui::theme();
+        RECT rc;
+        GetClientRect(h, &rc);
+        FillRect(dc, &rc, ui::panelBrush());
+        ui::fillRound(dc, titleFieldRect(), S(8), t.field, GetFocus() == A.hTitle ? t.accent : t.border);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(w);
+        SetTextColor(dc, ui::theme().text);
+        SetBkColor(dc, ui::theme().field);
+        return reinterpret_cast<LRESULT>(ui::fieldBrush());
+    }
     case WM_COMMAND: {
         int id = LOWORD(w), code = HIWORD(w);
+        if (id == ID_TITLE && (code == EN_SETFOCUS || code == EN_KILLFOCUS)) {
+            RECT f = titleFieldRect();
+            InvalidateRect(h, &f, FALSE);
+        }
+        if (id == ID_APPEARANCE && code == CBN_SELCHANGE) {
+            A.themeMode = ui::Mode(std::max<LRESULT>(0, SendMessageW(reinterpret_cast<HWND>(l), CB_GETCURSEL, 0, 0)));
+            applyTheme();
+            return 0;
+        }
         if (id == ID_SET_CLOSE || id == IDOK || id == IDCANCEL) {
             DestroyWindow(h);
             return 0;
@@ -869,7 +936,7 @@ LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (id == ID_SET_HOTKEY && code == EN_CHANGE) {
             LRESULT v = SendMessageW(reinterpret_cast<HWND>(l), HKM_GETHOTKEY, 0, 0);
             unsigned vk = unsigned(LOBYTE(v)), mods = hkfToMod(unsigned(HIBYTE(LOWORD(v))));
-            HWND hint = GetDlgItem(h, 0x7000);
+            HWND hint = GetDlgItem(h, ID_HINT);
             if (vk == 0) return 0;  // only modifiers held so far
             if (!hotkeyKeyAllowed(mods, vk)) {
                 SetWindowTextW(hint, L"Add Ctrl, Alt or Shift (only F1-F24 can be used alone).");
@@ -896,7 +963,7 @@ LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 void openSettings() {
     if (A.recording || A.settingsWnd) return;
     unregisterToggleHotkey(A.hwnd, HOTKEY_ID);  // so the hotkey control can see the current key being pressed
-    RECT cr = {0, 0, S(480), S(228)};
+    RECT cr = {0, 0, S(504), S(300)};
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
     AdjustWindowRectExForDpi(&cr, style, FALSE, 0, UINT(A.dpi));
     RECT or_;
@@ -909,26 +976,36 @@ void openSettings() {
         return;
     }
     A.settingsWnd = d;
+    ui::applyChrome(d, ui::theme().panel);
 
-    auto child = [&](const wchar_t* cls, const wchar_t* text, DWORD st, int id, int cx, int cy, int cw_, int ch_) {
-        return CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | st, S(cx), S(cy), S(cw_), S(ch_), d, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
-    };
     auto place = [&](HWND c, int cx, int cy, int cw_, int ch_) {
         SetParent(c, d);
         MoveWindow(c, S(cx), S(cy), S(cw_), S(ch_), TRUE);
         ShowWindow(c, SW_SHOW);
     };
-    child(L"STATIC", L"Monitor", SS_LEFT, 0x7001, 14, 22, 110, 20);
-    place(A.hMonitor, 140, 18, 326, 200);
-    place(A.hFilter, 14, 56, 120, 26);
-    place(A.hTitle, 140, 56, 240, 26);
-    place(A.hPick, 388, 56, 78, 26);
-    place(A.hBlind, 14, 94, 300, 26);
-    child(L"STATIC", L"Record / stop hotkey", SS_LEFT, 0x7002, 14, 136, 120, 20);
-    HWND hk = child(HOTKEY_CLASSW, L"", WS_TABSTOP, ID_SET_HOTKEY, 140, 132, 200, 26);
+    auto label = [&](const wchar_t* text, int id, unsigned flags, int cx, int cy, int cw_, int ch_) {
+        HWND c = ui::createLabel(d, id, text, flags);
+        MoveWindow(c, S(cx), S(cy), S(cw_), S(ch_), TRUE);
+        return c;
+    };
+    label(L"Monitor", 0x7001, 0, 18, 20, 120, 24);
+    place(A.hMonitor, 150, 16, 336, 32);
+    place(A.hFilter, 18, 56, 128, 32);
+    place(A.hTitle, 150 + 10, 56 + 8, 236 - 20, 32 - 16);
+    place(A.hPick, 394, 56, 92, 32);
+    place(A.hBlind, 18, 98, 300, 32);
+    label(L"Record / stop hotkey", 0x7002, 0, 18, 142, 130, 24);
+    HWND hk = ui::createHotkey(d, ID_SET_HOTKEY);
+    MoveWindow(hk, S(150), S(136), S(200), S(32), TRUE);
     SendMessageW(hk, HKM_SETHOTKEY, MAKEWORD(A.hkVk, modToHkf(A.hkMods)), 0);
-    child(L"STATIC", L"Tip: use a modifier combo such as Ctrl+Alt+R so the game does not also see the key.", SS_LEFT, 0x7000, 14, 168, 452, 20);
-    child(L"BUTTON", L"Close", BS_DEFPUSHBUTTON | WS_TABSTOP, ID_SET_CLOSE, 386, 190, 80, 28);
+    label(L"Appearance", 0x7003, 0, 18, 184, 120, 24);
+    HWND ap = ui::createCombo(d, ID_APPEARANCE);
+    for (const wchar_t* s : {L"Follow system", L"Light", L"Dark"}) SendMessageW(ap, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(s));
+    SendMessageW(ap, CB_SETCURSEL, int(A.themeMode), 0);
+    MoveWindow(ap, S(150), S(180), S(200), S(32), TRUE);
+    label(L"Tip: use a modifier combo such as Ctrl+Alt+R so the game does not also see the key.", ID_HINT, ui::LF_DIM, 18, 226, 468, 22);
+    HWND close = ui::createButton(d, ID_SET_CLOSE, L"Close", ui::BtnKind::Primary);
+    MoveWindow(close, S(394), S(256), S(92), S(32), TRUE);
     EnumChildWindows(d, [](HWND c, LPARAM) -> BOOL { SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(A.font), TRUE); return TRUE; }, 0);
     updateMonitorEnable();
 
@@ -961,13 +1038,34 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_CREATE:
         A.hwnd = h;
         A.dpi = int(GetDpiForWindow(h));
+        ui::setDpi(A.dpi);
         loadSettings();
+        ui::setMode(A.themeMode);
+        ui::applyChrome(h, ui::theme().window);
         createControls();
         applySettingsToControls();
         applyFont();
         SetTimer(h, TIMER_TICK, 33, nullptr);
         if (!registerRecordHotkey()) A.status = hotkeyName(A.hkMods, A.hkVk) + L" is already taken by another program; use the Record button or pick another key in Settings.";
         else A.status = L"Press " + hotkeyName(A.hkMods, A.hkVk) + L" or Record to start.";
+        return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        const ui::Theme& t = ui::theme();
+        FillRect(dc, &ps.rcPaint, ui::windowBrush());
+        for (const RECT& c : A.cards) ui::fillRound(dc, c, S(12), t.panel, t.border);
+        RECT cv;
+        GetWindowRect(A.canvas, &cv);
+        MapWindowPoints(nullptr, h, reinterpret_cast<POINT*>(&cv), 2);
+        InflateRect(&cv, 1, 1);
+        ui::fillRound(dc, cv, S(17), t.canvasBg, t.border);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_SETTINGCHANGE:
+        if (l && wcscmp(reinterpret_cast<const wchar_t*>(l), L"ImmersiveColorSet") == 0 && A.themeMode == ui::Mode::Auto) applyTheme();
         return 0;
     case WM_SIZE:
         if (A.canvas) layout();
@@ -994,7 +1092,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     case WM_HSCROLL: {
         HWND src = reinterpret_cast<HWND>(l);
-        if (src == A.hTime) onTimeSlider();
+        if (src == A.hTime) {
+            if (LOWORD(w) == TB_THUMBTRACK) A.sliderDrag = true;  // playback must not move the thumb meanwhile
+            if (LOWORD(w) == TB_ENDTRACK) {
+                A.sliderDrag = false;
+                A.lastTick = GetTickCount64();
+            } else {
+                onTimeSlider();
+            }
+        }
         else if (src == A.hThick) onThickness();
         else readSliders();
         return 0;
@@ -1078,14 +1184,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv && argc >= 2 && std::wstring(argv[1]) == L"--export") return headlessExport(argc, argv);
 
-    INITCOMMONCONTROLSEX ic{sizeof(ic), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES | ICC_HOTKEY_CLASS};
+    INITCOMMONCONTROLSEX ic{sizeof(ic), ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&ic);
+
+    ui::startup(inst);
 
     WNDCLASSW sc{};
     sc.lpfnWndProc = SettingsProc;
     sc.hInstance = inst;
     sc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    sc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     sc.lpszClassName = L"LTSettings";
     RegisterClassW(&sc);
 
@@ -1100,7 +1207,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"LineTracerMain";
     RegisterClassW(&wc);
 
@@ -1120,5 +1226,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    ui::shutdown();
     return int(msg.wParam);
 }

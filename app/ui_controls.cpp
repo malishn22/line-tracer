@@ -135,7 +135,7 @@ LRESULT CALLBACK ButtonProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 fill = press ? t.track : hot ? t.fieldHover : t.field; txt = t.text; border = t.border;
             }
             if (focus && en) border = t.accent;
-            fillRound(dc, rc, S(8), fill, border);
+            fillRound(dc, rc, S(7), fill, border);
             drawText(dc, windowText(h).c_str(), rc, txt, fontSemibold(), DT_CENTER);
         });
         return 0;
@@ -457,7 +457,7 @@ LRESULT CALLBACK ComboProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         const Theme& t = theme();
         bool en = IsWindowEnabled(h) != FALSE, focus = GetFocus() == h;
         paintBuffered(h, t.panel, [&](HDC dc, RECT rc) {
-            fillRound(dc, rc, S(8), en ? (d->hover || d->popup ? t.fieldHover : t.field) : t.field,
+            fillRound(dc, rc, S(7), en ? (d->hover || d->popup ? t.fieldHover : t.field) : t.field,
                       (d->popup || (focus && en)) ? t.accent : t.border);
             RECT tr = rc;
             tr.left += S(12);

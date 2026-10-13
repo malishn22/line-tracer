@@ -60,11 +60,8 @@ static fs::path lineTraceDir() {
         dir = docs;
         CoTaskMemFree(docs);
     }
-    fs::path legacy = dir / L"LineTrace";
     dir /= L"LineTracer";
     std::error_code ec;
-    // Older builds saved to Documents\LineTrace; carry those recordings over once.
-    if (fs::exists(legacy, ec) && !fs::exists(dir, ec)) fs::rename(legacy, dir, ec);
     fs::create_directories(dir, ec);
     return dir;
 }

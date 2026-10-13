@@ -34,8 +34,10 @@ set "ERR=1"
 goto done
 
 :app
+rc /nologo /fo build\app.res app\app.rc
+if errorlevel 1 ( set "ERR=1" & goto done )
 cl %CFLAGS% /Fo:build\ /Fe:build\LineTracer.exe app\main_win32.cpp app\main_window.cpp app\app_state.cpp app\status.cpp app\canvas.cpp app\session.cpp app\settings.cpp app\ui_theme.cpp app\ui_controls.cpp app\ui_draw.cpp app\ui_button.cpp app\ui_slider.cpp app\ui_combo.cpp app\ui_text.cpp platform\win32\capture_win32.cpp %CORE% ^
-  /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:app\app.manifest ^
+  /link build\app.res /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTINPUT:app\app.manifest ^
   user32.lib gdi32.lib comctl32.lib comdlg32.lib shell32.lib ole32.lib winmm.lib dwmapi.lib gdiplus.lib advapi32.lib
 if errorlevel 1 ( set "ERR=1" & goto done )
 if /i "%WHAT%"=="app" goto done

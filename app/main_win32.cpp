@@ -13,6 +13,7 @@
 #include "app_state.h"
 #include "canvas.h"
 #include "main_window.h"
+#include "resource.h"
 #include "session.h"
 #include "settings.h"
 #include "status.h"
@@ -214,6 +215,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     HWND hw = CreateWindowExW(0, wc.lpszClassName, APP_TITLE, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
                               MulDiv(1280, sysDpi, 96), MulDiv(860, sysDpi, 96), nullptr, nullptr, inst, nullptr);
     if (!hw) return 1;
+    // Pick the icon frames that match the DPI-scaled title bar and taskbar sizes.
+    for (int big = 0; big < 2; ++big) {
+        int cx = GetSystemMetricsForDpi(big ? SM_CXICON : SM_CXSMICON, sysDpi);
+        int cy = GetSystemMetricsForDpi(big ? SM_CYICON : SM_CYSMICON, sysDpi);
+        HANDLE icon = LoadImageW(inst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR);
+        if (icon) SendMessageW(hw, WM_SETICON, big ? ICON_BIG : ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    }
     ShowWindow(hw, show);
     layout();
     readSliders();

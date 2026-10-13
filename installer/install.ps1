@@ -35,7 +35,7 @@ if ((Split-Path $dir -Leaf) -eq 'LineTracer' -and (Test-Path $exe)) {
 }
 if (-not $Silent) {
     Add-Type -AssemblyName System.Windows.Forms
-    [void][System.Windows.Forms.MessageBox]::Show("LineTracer was removed.`nYour recordings in Documents\LineTrace were kept.", 'LineTracer Uninstall')
+    [void][System.Windows.Forms.MessageBox]::Show("LineTracer was removed.`nYour recordings in Documents\LineTracer were kept.", 'LineTracer Uninstall')
 }
 '@
 

@@ -61,7 +61,7 @@ void loadSettings() {
     A.themeMode = th == 1 ? ui::Mode::Light : th == 2 ? ui::Mode::Dark : ui::Mode::Auto;
 }
 
-static void saveSettings() {
+void saveSettings() {
     std::wstring f = settingsFile().wstring();
     auto put = [&](const wchar_t* k, const std::wstring& v) { WritePrivateProfileStringW(L"LineTracer", k, v.c_str(), f.c_str()); };
     wchar_t t[512] = {};
@@ -125,6 +125,7 @@ LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (id == ID_APPEARANCE && code == CBN_SELCHANGE) {
             A.themeMode = ui::Mode(std::max<LRESULT>(0, SendMessageW(reinterpret_cast<HWND>(l), CB_GETCURSEL, 0, 0)));
             applyTheme();
+            saveSettings();
             return 0;
         }
         if (id == ID_SET_CLOSE || id == IDOK || id == IDCANCEL) {
@@ -144,12 +145,15 @@ LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                 unregisterToggleHotkey(A.hwnd, HOTKEY_ID);  // test only; it is re-registered when the dialog closes
                 A.hkMods = mods;
                 A.hkVk = vk;
+                saveSettings();
                 SetWindowTextW(hint, (L"Record/stop key set to " + hotkeyName(mods, vk) + L".").c_str());
             }
             return 0;
         }
         // The re-parented main-window controls (monitor, filter, pick...) report to the main window.
-        return SendMessageW(A.hwnd, WM_COMMAND, w, l);
+        LRESULT r = SendMessageW(A.hwnd, WM_COMMAND, w, l);
+        saveSettings();  // every change made here sticks, even if the app is killed before Close
+        return r;
     }
     case WM_CLOSE:
         DestroyWindow(h);
@@ -162,7 +166,7 @@ void openSettings() {
     if (A.recording || A.settingsWnd) return;
     unregisterToggleHotkey(A.hwnd, HOTKEY_ID);  // so the hotkey control can see the current key being pressed
     RECT cr = {0, 0, S(504), S(300)};
-    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;  // children paint themselves; the dialog must not overpaint them
     AdjustWindowRectExForDpi(&cr, style, FALSE, 0, UINT(A.dpi));
     RECT or_;
     GetWindowRect(A.hwnd, &or_);
@@ -206,6 +210,7 @@ void openSettings() {
     MoveWindow(close, S(394), S(256), S(92), S(32), TRUE);
     EnumChildWindows(d, [](HWND c, LPARAM) -> BOOL { SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(A.font), TRUE); return TRUE; }, 0);
     updateMonitorEnable();
+    RedrawWindow(d, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
     EnableWindow(A.hwnd, FALSE);
     MSG msg{};

@@ -6,6 +6,7 @@ namespace app {
 
 void loadSettings();
 void applySettingsToControls();  // call once the controls exist
+void saveSettings();
 void applyTheme();
 bool registerRecordHotkey();
 void openSettings();  // modal; returns when the dialog closes

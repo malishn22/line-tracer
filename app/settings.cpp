@@ -158,6 +158,14 @@ LRESULT CALLBACK SettingsProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_CLOSE:
         DestroyWindow(h);
         return 0;
+    case WM_DESTROY:
+        // The main window's controls are borrowed children of this dialog. DestroyWindow destroys children
+        // right after this message, so hand them back now or they die and the next open finds dead handles.
+        for (HWND c : {A.hMonitor, A.hFilter, A.hTitle, A.hPick, A.hBlind}) {
+            ShowWindow(c, SW_HIDE);
+            SetParent(c, A.hwnd);
+        }
+        return 0;
     }
     return DefWindowProcW(h, m, w, l);
 }
@@ -222,11 +230,7 @@ void openSettings() {
     }
     if (msg.message == WM_QUIT) PostQuitMessage(int(msg.wParam));
 
-    // Hand the shared controls back to the main window (hidden) and persist the choices.
-    for (HWND c : {A.hMonitor, A.hFilter, A.hTitle, A.hPick, A.hBlind}) {
-        ShowWindow(c, SW_HIDE);
-        SetParent(c, A.hwnd);
-    }
+    // The shared controls were already handed back in SettingsProc's WM_DESTROY; persist the choices.
     A.settingsWnd = nullptr;
     EnableWindow(A.hwnd, TRUE);
     SetForegroundWindow(A.hwnd);
